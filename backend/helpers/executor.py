@@ -63,7 +63,7 @@ _TRIVIAL_VALUES = {"me", "primary", "default"}
 _LABEL_KEYS = ("name", "title", "summary", "subject", "snippet", "start", "from", "sender", "state")
 
 _EMPTY_NOTE = ("Nothing matched with these arguments. Searches here match text literally, so retry with fewer, "
-               "more distinctive words (e.g. 'board prep' rather than 'board prep meeting'). Before telling the user "
+               "more distinctive words (e.g. 'standup' rather than 'weekly standup meeting'). Before telling the user "
                "it doesn't exist, also consider another scope: another calendar (GOOGLECALENDAR_LIST_CALENDARS), "
                "shared drives, or another service.")
 
