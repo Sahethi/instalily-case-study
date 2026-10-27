@@ -2,6 +2,8 @@
 
 I have been using agentic tools like Muse in my daily life and also when I read more about InstaLily's Lily, I felt like this case study was trying make me achieve the goal of actually accomplishing the work rather than just answering questions like most agents do these days.
 
+This is like we are trying to add a layer of abstraction or a wrapper on the activities that user would generally have to go through to achieve their task which is what I believe I need to achieve by automating a lot of the work.
+
 We are given 191 tools and 7 services and my initial thought was that an agent shouldn’t have to go through every single tool in order to complete the request because that would waste a significant amount of time. Most of the tasks might only require like 2-3 tools, so this would require me to narrow down the right tools and then orchestrate their actions.
 
 ---
@@ -16,18 +18,15 @@ In the second stage is moving towards the agent that receives the schemas and ex
 
 I thought of using embedding based retrieval or even hierarchical routing but I felt like given the manageable size of the catalog, I went with a single LLM routing call that considers the user’s request and is able to identify the capabilities across all the different services without extra retrieval infrastructure.
 
+I feel like this connects to InstaWorkers at InstaLily, which are basically designed to carry out the business workflows. I think my implementation here is a smaller part of the challenge, where I'm trying to find all the relevant tools before I actually execute everything.
+
 I think this has a limitation for routing recall, in case the router misses a necessary tool, the agent is not always able to recover it through search_tools.
 
 ---
 
 ## 3. Orchestration Loop
 
-So once the tools are selected, the agent must decide how to set them up in the pipeline and how to use them. For example, I want to summarize an email in Slack. That would require me to:
-
-1. Find the email.
-2. Understand the contents of the email.
-3. Find which Slack channel I want to post this email summary to.
-4. Post the message.
+So once the tools are selected, the agent must decide how to set them up in the pipeline and how to use them. For example, I want to summarize an email in Slack. That would require me to 1. Find the email. 2. Understand the contents of the email. 3. Find which Slack channel I want to post this email summary to. 4. Post the message.
 
 And in this case, I made sure that my agent has an iterative loop and I have an executor which is basically handling the invocation calls for the tools. I'm checking if the arguments that I'm passing are valid and also making sure that there is some sort of a cache or a log maintained.
 
