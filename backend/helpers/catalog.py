@@ -83,13 +83,21 @@ def compact_catalog() -> str:
     return "\n\n".join(blocks)
 
 
+# If a service is touched at all, its basic "find" tool comes along, so the
+# agent can always check that a named item exists before acting on it.
+SERVICE_ANCHORS = {"googledrive": "GOOGLEDRIVE_FIND_FILE"}
+
+
 def with_companions(names: list[str]) -> list[str]:
     """Add lookup tools for any write/detail tool, preserving order and uniqueness."""
-    valid = set(tool_names())
+    specs = _all_specs()
     out: list[str] = []
     for name in names:
-        for candidate in [name, *COMPANIONS.get(name, [])]:
-            if candidate in valid and candidate not in out:
+        if name not in specs:
+            continue
+        anchor = SERVICE_ANCHORS.get(specs[name].service)
+        for candidate in [name, *COMPANIONS.get(name, []), *([anchor] if anchor else [])]:
+            if candidate in specs and candidate not in out:
                 out.append(candidate)
     return out
 
