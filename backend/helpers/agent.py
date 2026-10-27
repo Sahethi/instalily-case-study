@@ -4,45 +4,67 @@ from __future__ import annotations
 import json
 import logging
 import time
+from functools import lru_cache
 from typing import Any
 
-from backend.helpers import catalog
+from backend.helpers import catalog, stats
 from backend.helpers.config import AGENT_MODEL, MAX_ACTIVE_TOOLS, MAX_STEPS, get_client
 from backend.helpers.executor import ToolExecutor
+from backend.helpers.hints import allowed_values
 from backend.helpers.router import route
 
 log = logging.getLogger("chat.agent")
 
+def _clock_line() -> str:
+    """Today's date from the mock calendar clock, so the prompt can't drift from the fixtures."""
+    from datetime import timedelta
+
+    from backend.googlecalendar_mock.state import BASE_NOW, BASE_TIMEZONE
+
+    monday = (BASE_NOW + timedelta(days=7 - BASE_NOW.weekday())).date()
+    friday = monday + timedelta(days=4)
+    return (
+        f"Current date and time: {BASE_NOW:%A, %B %-d, %Y, %H:%M} {BASE_TIMEZONE} (UTC offset {BASE_NOW:%z}). "
+        f"Resolve relative dates (\"today\", \"tomorrow\", \"next week\") from this; next week is "
+        f"Mon {monday:%b %-d} - Fri {friday:%b %-d, %Y}. Use ISO 8601 datetimes with the offset."
+    )
+
+
 SYSTEM_PROMPT = """You are a workplace assistant for Avery Quinn (Staff Engineer; Slack user U001, Linear user "me", avery@corp.com; Gmail account me@example.com). You act through tools over Gmail, Google Calendar, Google Drive, Slack, Linear, GitHub and Perplexity.
 
-Current date and time: Wednesday, April 8, 2026, 09:00 America/New_York. Resolve relative dates ("tomorrow", "next week") from this; next week is Mon Apr 13 - Fri Apr 17, 2026. Use ISO 8601 datetimes.
+{clock}
 
 How to work:
 - Do exactly what was asked with as few tool calls as possible. Never repeat a lookup whose result you already have, and don't call tools for things you already know from the conversation.
 - When several calls don't depend on each other, make them in the same step (parallel). Chain dependent calls in order.
 - Resolve names to IDs with a lookup before writing (Slack channel names -> IDs via slack_list_conversations; files via GOOGLEDRIVE_FIND_FILE; Linear teams/projects/users via their list tools).
 - Only fill the arguments the task needs. Leave optional fields (labels, priority, state, assignee, filters...) null unless the user asked for them or you got the value from a tool result - never invent IDs, labels or names.
-- If you lack a needed tool, call search_tools with a short description of the capability.
+- If you lack a needed tool, call search_tools with a short description of the capability. Do this before asking the user for details you could look up yourself.
+- Before saying something wasn't found, consider whether it could live in another service (a named brief or doc may be a Drive file rather than an email); if so, look there too, using search_tools to get the tool if needed.
 
 Ambiguity:
-- If the request could reasonably mean different things and guessing would change what gets written, sent, scheduled or deleted (which project, which channel, which of several matching items, missing recipient), ask ONE short clarifying question instead of acting. Offer the concrete options if you already know them or can get them with one cheap lookup.
+- If the request could reasonably mean different things and guessing would change what gets written, sent, scheduled or deleted (which project, which channel, which of several matching items, missing recipient or content), ask ONE short clarifying question instead of acting. Do not start the task (checking availability, drafting, etc.) until it is resolved. At most one cheap list call to offer concrete options is fine.
+- Destructive actions (delete, trash, cancel, remove): if your lookup returns more than one matching item - even two messages in the same thread - do NOT pick one. List the matches (subject/date/sender) and ask which one.
 - If the target named by the user doesn't exist (e.g. no Slack channel by that name), say so and list the closest options; do not substitute a different target on your own.
 - Don't ask for confirmation of a clear, explicit instruction - just do it.
 
 Honesty:
 - Only report what tool results show. Never claim an action succeeded unless the tool returned success.
 - If a search finds nothing or a tool errors, say so plainly and suggest a next step. If an error looks fixable (wrong ID format, missing argument), fix it and retry once.
+- When checking whether something exists, don't narrow the lookup with optional filters (types, labels, states, date ranges) - an empty filtered result doesn't prove it's missing.
 - When asked to act on a specific item (file, email, event, issue), first check it exists. If it doesn't, say that clearly - that comes before anything else.
 - Some actions have no tool (e.g. there is no tool to delete a Drive file). Say so instead of pretending.
 
 Service tips:
-- Gmail: GMAIL_FETCH_EMAILS returns only 1 message unless you set max_results (use ~10 for lists). The query matches every word as a substring of subject/body/sender, so use 1-2 short keywords (e.g. "timeline" not "timelines"); `from:`, `to:`, `subject:`, `label:`, `in:sent` work. Results are newest first. If nothing matches, retry once with a broader keyword.
+- Gmail: GMAIL_FETCH_EMAILS returns only 1 message unless you set max_results (use ~10 for lists, and at least 5 when finding an email to delete, trash or reply to, so you can see whether several match). The query matches every word as a substring of subject/body/sender, so use 1-2 short keywords (e.g. "timeline" not "timelines"); `from:`, `to:`, `subject:`, `label:`, `in:sent` work. Results are newest first. If nothing matches, retry once with a broader keyword.
 - Drive: always call GOOGLEDRIVE_FIND_FILE with includeItemsFromAllDrives=true and corpora="allDrives" (some files live in shared drives). q looks like "name contains 'budget'"; search by a distinctive part of the name. Mention when a file is in the trash.
-- Slack: slack_send_message needs a conversation ID from slack_list_conversations (C... channels, D... DMs, G... group DMs), never a user ID or channel name. To DM someone, find the DM conversation that has them as a member.
-- Calendar: GOOGLECALENDAR_CREATE_EVENT takes start_datetime plus event_duration_hour/event_duration_minutes; attendees are email addresses.
+- Slack: call slack_list_conversations without a types filter (what users call a "channel" may be a private channel or group DM). Post only to the conversation the user named - never to a different one. slack_send_message needs a conversation ID from slack_list_conversations (C... channels, D... DMs, G... group DMs), never a user ID or channel name. To DM someone, find the DM conversation that has them as a member.
+- Calendar: the user has several calendars (primary plus secondary ones from GOOGLECALENDAR_LIST_CALENDARS). When looking for a specific event and it isn't on primary, search the other calendars too (in parallel) before saying it doesn't exist. GOOGLECALENDAR_CREATE_EVENT takes start_datetime plus event_duration_hour/event_duration_minutes; attendees are email addresses.
 - Linear: team arguments accept the team key (ENG, GRO) or name directly - no need to look teams up first. linear_list_projects shows each project's members.
 
-Answer style: concise and specific. Summaries should use the real content from tool results. Mention IDs or names the user may need next."""
+Answer style: concise and specific. Summaries should use the real content from tool results. When you found or changed specific items, name them with their IDs (e.g. thread thr_001, issue ENG-1, channel C001) so a follow-up message can refer to them without another lookup."""
+
+SYSTEM_PROMPT = SYSTEM_PROMPT.replace("{clock}", _clock_line())
 
 SEARCH_TOOLS = {
     "type": "function",
@@ -74,19 +96,57 @@ def _to_history(messages: list[Any]) -> list[dict[str, str]]:
     return history
 
 
-def _function_tools(names: list[str]) -> list[dict[str, Any]]:
-    from backend.main import get_openai_tools
+def _nullable(prop: dict[str, Any]) -> dict[str, Any]:
+    if prop.get("type") == "null" or any(o.get("type") == "null" for o in prop.get("anyOf", [])):
+        return prop
+    meta = {k: prop[k] for k in ("title", "description") if k in prop}
+    inner = {k: v for k, v in prop.items() if k not in ("title", "description", "default")}
+    if "default" in prop:
+        meta["description"] = f"{meta.get('description', '')} Null = default ({prop['default']!r}).".strip()
+    return {**meta, "anyOf": [inner, {"type": "null"}]}
 
-    return get_openai_tools(names) if names else []
+
+@lru_cache(maxsize=256)
+def _tool_schema(name: str) -> str:
+    """OpenAI strict mode lists every property as required. For optional params
+    that aren't nullable, that forces the model to invent a value (we saw fake
+    pagination cursors and labels). Making them nullable keeps strict-mode
+    guarantees while letting the model skip them; the executor drops nulls so
+    the tool's own default applies."""
+    from backend.main import get_openai_tools, get_tool_spec
+
+    entry = get_openai_tools([name])[0]
+    truly_required = set(get_tool_spec(name).args_model.model_json_schema().get("required", []))
+    props = entry["parameters"].get("properties", {})
+    for key, values in allowed_values(name).items():
+        if key in props:
+            props[key]["description"] = f"{props[key].get('description', '')} Allowed values: {', '.join(values)}.".strip()
+    for key, prop in list(props.items()):
+        if key not in truly_required:
+            props[key] = _nullable(prop)
+    return json.dumps(entry)
+
+
+def _function_tools(names: list[str]) -> list[dict[str, Any]]:
+    return [json.loads(_tool_schema(n)) for n in names]
 
 
 def run_turn(messages: list[Any]) -> tuple[str, ToolExecutor]:
     executor = ToolExecutor()
+    turn = stats.start()
+    started = time.perf_counter()
     try:
         return _loop(messages, executor), executor
     except Exception as exc:
         exc.executor = executor  # so the caller can still return the partial log
         raise
+    finally:
+        turn.total_ms = (time.perf_counter() - started) * 1000
+        summary = {**turn.as_dict(), "tool_calls": len(executor.log),
+                   "tool_errors": sum(1 for c in executor.log if c.error)}
+        stats.LAST_TURN.clear()
+        stats.LAST_TURN.update(summary)
+        log.info("turn %s", json.dumps(summary))
 
 
 def _loop(messages: list[Any], executor: ToolExecutor) -> str:
@@ -94,6 +154,8 @@ def _loop(messages: list[Any], executor: ToolExecutor) -> str:
     history = _to_history(messages)
     routed = route([h for h in history if h["role"] in ("user", "assistant")])
     active = list(routed.tools)
+    stats.current().router_ms = (time.perf_counter() - started) * 1000
+    stats.current().routed_tools = list(active)
     log.info("router(%s) -> %s (%.0fms)", routed.source, active, (time.perf_counter() - started) * 1000)
 
     client = get_client()
@@ -109,6 +171,8 @@ def _loop(messages: list[Any], executor: ToolExecutor) -> str:
             temperature=0,
             store=False,
         )
+        stats.current().add_usage(response)
+        stats.current().steps = step + 1
         calls = [o for o in response.output if o.type == "function_call"]
         items.extend(o.model_dump(exclude_none=True) for o in response.output)
         if not calls:
@@ -139,6 +203,7 @@ def _loop(messages: list[Any], executor: ToolExecutor) -> str:
         temperature=0,
         store=False,
     )
+    stats.current().add_usage(response)
     return response.output_text.strip() or "I couldn't finish this request."
 
 
@@ -147,6 +212,7 @@ def _search_tools(query: str, active: list[str]) -> str:
     room = MAX_ACTIVE_TOOLS + 8 - len(active)
     added = catalog.with_companions(found)[: max(room, 0)]
     active.extend(n for n in added if n not in active)
+    stats.current().searched_tools.extend(added)
     log.info("search_tools(%r) -> %s", query, added)
     if not added:
         return json.dumps({"tools": [], "note": "No new matching tools. Your current tools may already cover this."})

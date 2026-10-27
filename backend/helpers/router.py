@@ -11,7 +11,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 
-from backend.helpers import catalog
+from backend.helpers import catalog, stats
 from backend.helpers.config import MAX_ACTIVE_TOOLS, ROUTER_MODEL, get_client
 
 log = logging.getLogger("chat.router")
@@ -24,9 +24,10 @@ Rules:
 - Cover the whole task: for "find X and post it to Slack", pick both the lookup tool and the write tool.
 - Include the lookup tools needed to turn names into IDs (e.g. slack_list_conversations before slack_send_message, GOOGLEDRIVE_FIND_FILE before acting on a file, linear_list_teams / linear_list_projects / linear_list_users before creating or assigning Linear issues).
 - Prefer the general list/search/fetch tool over narrow variants. Usually 1-8 tools are enough; never more than 15.
+- If an item could live in more than one service (e.g. "the Launch Brief" could be a Drive file or an email; "the roadmap" a Drive doc or a Linear document), include the search tool for each plausible service.
 - If the request names a service, stay inside it. Use perplexity_search only for questions about the outside world.
 - Requests that are ambiguous still need the tools that would show the options (e.g. linear_list_projects for "the project").
-- Return an empty list for greetings, small talk, or questions about yourself.
+- Return an empty list ONLY for greetings, small talk, or questions about yourself. Any request that touches the user's data or asks for an action gets tools, even if details are missing or it will need a clarifying question.
 
 Tool catalog:
 """
@@ -74,6 +75,7 @@ def route(history: list[dict[str, str]]) -> RouteResult:
             temperature=0,
             store=False,
         )
+        stats.current().add_usage(response)
         picked = json.loads(response.output_text)["tools"]
         tools = catalog.with_companions(picked)[:MAX_ACTIVE_TOOLS]
         return RouteResult(tools=tools, source="llm", raw=picked)
