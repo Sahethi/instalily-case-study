@@ -2,9 +2,7 @@
 
 I have been using agentic tools like Muse in my daily life and also when I read more about InstaLily's Lily, I felt like this case study was trying make me achieve the goal of actually accomplishing the work rather than just answering questions like most agents do these days.
 
-This is like we are trying to add a layer of abstraction or a wrapper on the activities that user would generally have to go through to achieve their task which is what I believe I need to achieve by automating a lot of the work.
-
-This is the problem I believe I needed to tackle in this case study. We are given 191 tools and 7 services and my initial thought was that an agent shouldn’t have to go through every single tool in order to complete the request because that would waste a significant amount of time. Most of the tasks might only require like 2-3 tools, so this would require me to narrow down the right tools and then orchestrate their actions.
+We are given 191 tools and 7 services and my initial thought was that an agent shouldn’t have to go through every single tool in order to complete the request because that would waste a significant amount of time. Most of the tasks might only require like 2-3 tools, so this would require me to narrow down the right tools and then orchestrate their actions.
 
 ---
 
@@ -14,13 +12,9 @@ So in the tool-routing part I implemented a 2 stage architecture which is basica
 
 In the first stage I built an LLM router which is used to examine all the tool descriptions, so like all the 191 tools and selecting the relevant took based on the user query.
 
-If the user is asking a query about and email and how he/she wants to send the details on slack, the 2 services that would be involves are Gmail and Slack.
-
 In the second stage is moving towards the agent that receives the schemas and executes the whole workflow. While developing, I noticed that my compact catalog requires around 3000 tokens But in case I was using the entire tool definition, it would consume around 43000 tokens. And this is quite a significant reduction in my catalog size.
 
 I thought of using embedding based retrieval or even hierarchical routing but I felt like given the manageable size of the catalog, I went with a single LLM routing call that considers the user’s request and is able to identify the capabilities across all the different services without extra retrieval infrastructure.
-
-I feel like this connects to InstaWorkers at InstaLily, which are basically designed to carry out the business workflows. I think my implementation here is a smaller part of the challenge, where I'm trying to find all the relevant tools before I actually execute everything.
 
 I think this has a limitation for routing recall, in case the router misses a necessary tool, the agent is not always able to recover it through search_tools.
 
@@ -63,5 +57,3 @@ In my final implementation, 34/38 local scenarios have passed, and I have 75 pas
 - And I think, secondly, I would try to see if I can improve the calendar event retrieval because the model sometimes adds extra words, such as "meeting", to the search query when the underlying search is on actual literal title matching. I would try to see if I can make the retrieval more flexible.
 
 I feel like my final challenge is quite something that InstaBrain does, and by that I particularly mean retaining important context and knowledge across different workflows. I feel like my current implementation relies heavily on conversation history rather than persistent memory.
-
-And I think the biggest lesson that I have understood from this case study is that agentic orchestration goes beyond just knowing which are the right tools, because actually coordinating the actions So that the intended task given by the user is completed successfully, it can only be done if there is enough context, enough guardrails, and control in order to achieve the goal.
