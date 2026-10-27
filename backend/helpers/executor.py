@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -57,6 +58,52 @@ def _short_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+_DESTRUCTIVE = re.compile(r"delete|trash|remove|clear|empty", re.IGNORECASE)
+_TRIVIAL_VALUES = {"me", "primary", "default"}
+_LABEL_KEYS = ("name", "title", "summary", "subject", "snippet", "start", "from", "sender", "state")
+
+_EMPTY_NOTE = ("Nothing matched with these arguments. Searches here match text literally, so retry with fewer, "
+               "more distinctive words (e.g. 'board prep' rather than 'board prep meeting'). Before telling the user "
+               "it doesn't exist, also consider another scope: another calendar (GOOGLECALENDAR_LIST_CALENDARS), "
+               "shared drives, or another service.")
+
+
+def is_destructive(name: str) -> bool:
+    return bool(_DESTRUCTIVE.search(name))
+
+
+def _item_lists(obj: Any, depth: int = 0):
+    """Yield every list of 2+ records found in a tool result (a lookup's candidates)."""
+    if depth > 3:
+        return
+    if isinstance(obj, dict):
+        for value in obj.values():
+            yield from _item_lists(value, depth + 1)
+    elif isinstance(obj, list):
+        records = [x for x in obj if isinstance(x, dict)]
+        if len(records) >= 2:
+            yield records
+        for x in records:
+            yield from _item_lists(x, depth + 1)
+
+
+def _is_empty(result: Any) -> bool:
+    """True when a read's result is only empty lists, e.g. {"events": [], "nextPageToken": null}."""
+    if not isinstance(result, dict):
+        return False
+    lists = [v for v in result.values() if isinstance(v, list)]
+    return bool(lists) and all(len(v) == 0 for v in lists)
+
+
+def _label(record: dict[str, Any]) -> dict[str, Any]:
+    out = {k: record[k] for k in ("id", "threadId") if k in record}
+    for key in _LABEL_KEYS:
+        value = record.get(key)
+        if isinstance(value, (str, int)) or (isinstance(value, dict) and "dateTime" in value):
+            out[key] = value if not isinstance(value, str) else value[:80]
+    return out
+
+
 class ToolExecutor:
     """Executes tools for one /chat turn and keeps the ordered call log."""
 
@@ -64,6 +111,8 @@ class ToolExecutor:
         self.log: list[ToolCallLog] = []
         self._read_cache: dict[str, str] = {}
         self._failed: dict[str, str] = {}  # exact call -> deterministic error it produced
+        self._recent_reads: list[Any] = []  # results of this turn's reads, newest last
+        self._ambiguity_checked = False  # the destructive-action check fires at most once per turn
 
     def run(self, name: str, raw_args: dict[str, Any]) -> str:
         """Invoke a tool and return the text the model should see."""
@@ -81,6 +130,10 @@ class ToolExecutor:
             # retry (bad arguments, unknown ID). Not executed, so not logged.
             return json.dumps({"error": self._failed[cache_key],
                                "note": "This exact call already failed. Change the arguments or stop and explain."})
+
+        held = self._hold_ambiguous_destructive(name, args)
+        if held is not None:
+            return held  # not executed, so not logged
 
         started = time.perf_counter()
         try:
@@ -104,6 +157,13 @@ class ToolExecutor:
         if len(text) > MAX_TOOL_OUTPUT_CHARS:
             text = text[:MAX_TOOL_OUTPUT_CHARS] + f"... [truncated, {len(text)} chars total]"
         if is_read_only(name):
+            self._recent_reads = [*self._recent_reads[-4:], result]
+            # Echo the scope the read ran with (e.g. which calendar_id), so a later
+            # write can use the right scope for an ID found here. Model view only.
+            if _is_empty(result):
+                text = json.dumps({"note": _EMPTY_NOTE, "called_with": args, "result": result}, default=str)
+            elif len(text) < MAX_TOOL_OUTPUT_CHARS:
+                text = '{"called_with": ' + json.dumps(args, default=str) + ', "result": ' + text + "}"
             self._read_cache[cache_key] = text
         else:
             # A write may change what reads return (and may fix what made a call
@@ -112,3 +172,32 @@ class ToolExecutor:
             self._read_cache.clear()
             self._failed.clear()
         return text
+
+    def _hold_ambiguous_destructive(self, name: str, args: dict[str, Any]) -> str | None:
+        """Execution-time check for destructive actions.
+
+        If the target was picked out of a lookup in this turn that returned
+        several records, hold the first destructive call and hand the
+        candidates back: the model must repeat the call (the request clearly
+        names this item) or ask the user. Unique targets pass straight through,
+        and the check fires once per turn so "delete both" still works.
+        """
+        if self._ambiguity_checked or not is_destructive(name):
+            return None
+        targets = {v for v in args.values() if isinstance(v, str) and len(v) >= 3 and v not in _TRIVIAL_VALUES}
+        if not targets:
+            return None
+        for result in reversed(self._recent_reads):
+            for records in _item_lists(result):
+                if any(targets & {v for v in r.values() if isinstance(v, str)} for r in records):
+                    self._ambiguity_checked = True
+                    log.info("held %s: target came from a lookup with %d matches", name, len(records))
+                    return json.dumps({
+                        "not_executed": True,
+                        "reason": (f"Your lookup returned {len(records)} matching items and this {name} would act "
+                                   "on one of them. If the user's request clearly identifies this exact item "
+                                   "(e.g. by sender, date or exact name), repeat the same call to proceed. If it "
+                                   "doesn't, don't guess: list the matches and ask the user which one."),
+                        "matches": [_label(r) for r in records[:8]],
+                    }, default=str)
+        return None

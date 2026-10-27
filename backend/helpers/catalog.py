@@ -42,6 +42,8 @@ COMPANIONS: dict[str, list[str]] = {
     "GOOGLEDRIVE_ADD_FILE_SHARING_PREFERENCE": ["GOOGLEDRIVE_FIND_FILE"],
     "GOOGLEDRIVE_CREATE_SHORTCUT_TO_FILE": ["GOOGLEDRIVE_FIND_FILE"],
     "GOOGLEDRIVE_FILES_MODIFY_LABELS": ["GOOGLEDRIVE_FIND_FILE"],
+    "GOOGLECALENDAR_FIND_EVENT": ["GOOGLECALENDAR_LIST_CALENDARS"],
+    "GOOGLECALENDAR_EVENTS_LIST": ["GOOGLECALENDAR_LIST_CALENDARS"],
     "GOOGLECALENDAR_UPDATE_EVENT": ["GOOGLECALENDAR_FIND_EVENT", "GOOGLECALENDAR_LIST_CALENDARS"],
     "GOOGLECALENDAR_PATCH_EVENT": ["GOOGLECALENDAR_FIND_EVENT", "GOOGLECALENDAR_LIST_CALENDARS"],
     "GOOGLECALENDAR_DELETE_EVENT": ["GOOGLECALENDAR_FIND_EVENT", "GOOGLECALENDAR_LIST_CALENDARS"],
@@ -102,10 +104,17 @@ def with_companions(names: list[str]) -> list[str]:
     return out
 
 
+# A few everyday words the tool descriptions don't use.
+_SYNONYMS = {"meeting": "event", "appointment": "event", "cancel": "delete", "message": "send",
+             "post": "send", "schedule": "create", "doc": "file", "document": "file"}
+
+
 def _tokens(text: str) -> set[str]:
     words = set(_WORD.findall(text.lower().replace("_", " "))) - _STOP
-    # crude stemming so "emails" matches "email", "issues" matches "issue"
-    return words | {w[:-1] for w in words if w.endswith("s") and len(w) > 3}
+    # Crude stemming: "emails" ~ "email", "schedule" ~ "scheduling" (shared 6-letter prefix).
+    words |= {w[:-1] for w in words if w.endswith("s") and len(w) > 3}
+    words |= {_SYNONYMS[w] for w in words if w in _SYNONYMS}
+    return words | {w[:6] for w in words if len(w) > 6}
 
 
 @lru_cache(maxsize=1)

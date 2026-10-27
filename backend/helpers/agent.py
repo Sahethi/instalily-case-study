@@ -46,7 +46,7 @@ Ambiguity:
 - If the request could reasonably mean different things and guessing would change what gets written, sent, scheduled or deleted (which project, which channel, which of several matching items, missing recipient or content), ask ONE short clarifying question instead of acting. Do not start the task (checking availability, drafting, etc.) until it is resolved. At most one cheap list call to offer concrete options is fine.
 - Destructive actions (delete, trash, cancel, remove): if your lookup returns more than one matching item - even two messages in the same thread - do NOT pick one. List the matches (subject/date/sender) and ask which one.
 - If the target named by the user doesn't exist (e.g. no Slack channel by that name), say so and list the closest options; do not substitute a different target on your own.
-- Don't ask for confirmation of a clear, explicit instruction - just do it.
+- Don't ask for confirmation of a clear, explicit instruction - just do it. Not knowing the date or details of an item the user refers to ("my dentist appointment") is not ambiguity: look it up.
 
 Honesty:
 - Only report what tool results show. Never claim an action succeeded unless the tool returned success.
@@ -59,12 +59,13 @@ Service tips:
 - Gmail: GMAIL_FETCH_EMAILS returns only 1 message unless you set max_results (use ~10 for lists, and at least 5 when finding an email to delete, trash or reply to, so you can see whether several match). The query matches every word as a substring of subject/body/sender, so use 1-2 short keywords (e.g. "timeline" not "timelines"); `from:`, `to:`, `subject:`, `label:`, `in:sent` work. Results are newest first. If nothing matches, retry once with a broader keyword.
 - Drive: always call GOOGLEDRIVE_FIND_FILE with includeItemsFromAllDrives=true and corpora="allDrives" (some files live in shared drives). q looks like "name contains 'budget'"; search by a distinctive part of the name. Mention when a file is in the trash.
 - Slack: call slack_list_conversations without a types filter (what users call a "channel" may be a private channel or group DM). Post only to the conversation the user named - never to a different one. slack_send_message needs a conversation ID from slack_list_conversations (C... channels, D... DMs, G... group DMs), never a user ID or channel name. To DM someone, find the DM conversation that has them as a member.
-- Calendar: the user has several calendars (primary plus secondary ones from GOOGLECALENDAR_LIST_CALENDARS). When looking for a specific event and it isn't on primary, search the other calendars too (in parallel) before saying it doesn't exist. GOOGLECALENDAR_CREATE_EVENT takes start_datetime plus event_duration_hour/event_duration_minutes; attendees are email addresses.
+- Calendar: GOOGLECALENDAR_FIND_EVENT matches query literally against event titles, so use 1-2 distinctive words ('board prep', 'dentist'), never extra words like 'meeting' or 'appointment'. To update or delete an event, pass the calendar_id of the calendar where you found it (not primary). The user has several calendars (primary plus secondary ones from GOOGLECALENDAR_LIST_CALENDARS). When looking for a specific event and it isn't on primary, search the other calendars too (in parallel) before saying it doesn't exist. GOOGLECALENDAR_CREATE_EVENT takes start_datetime plus event_duration_hour/event_duration_minutes; attendees are email addresses.
 - Linear: team arguments accept the team key (ENG, GRO) or name directly - no need to look teams up first. Projects have no member list: "everyone on a project" means the members of the project's team (team memberIds from linear_list_teams / linear_get_team; emails from linear_list_users).
 
 Answer style: concise and specific. Summaries should use the real content from tool results. When you found or changed specific items, name them with their IDs (e.g. thread thr_001, issue ENG-1, channel C001) so a follow-up message can refer to them without another lookup."""
 
 SYSTEM_PROMPT = SYSTEM_PROMPT.replace("{clock}", _clock_line())
+
 
 SEARCH_TOOLS = {
     "type": "function",
@@ -218,7 +219,8 @@ def _loop(messages: list[Any], executor: ToolExecutor) -> str:
 
 
 def _search_tools(query: str, active: list[str]) -> str:
-    found = [n for n in catalog.keyword_search(query, limit=6) if n not in active]
+    exact = [n for n in catalog.tool_names() if n.lower() in query.lower()]
+    found = [n for n in [*exact, *catalog.keyword_search(query, limit=6)] if n not in active]
     room = MAX_ACTIVE_TOOLS + 8 - len(active)
     added = catalog.with_companions(found)[: max(room, 0)]
     active.extend(n for n in added if n not in active)

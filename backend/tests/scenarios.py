@@ -32,6 +32,7 @@ class Scenario:
     min_calls: int | None = None                             # for the efficiency column
     reply_has: list[str] = field(default_factory=list)       # case-insensitive, any-of groups split by |
     state_check: Callable[[dict[str, Any]], bool] | None = None
+    force_route: list[str] | None = None  # override the router (forces mid-task search_tools discovery)
     turns: list[str] | None = None  # real multi-turn: each turn's reply feeds the next; checks apply to the last turn
 
 
@@ -74,8 +75,18 @@ def _new_slack_posts(state: dict, channel: str) -> int:
                for m in log["messages"] if m["ts"] not in _SEED_TS)
 
 
-def _issue_state(issue_id: str) -> str:
-    return ""
+def _gmail_msg(state: dict, msg_id: str) -> dict | None:
+    return next((m for m in state["gmail"]["messages"] if m["id"] == msg_id), None)
+
+
+def _gone(state: dict, msg_id: str) -> bool:
+    m = _gmail_msg(state, msg_id)
+    return m is None or "TRASH" in m.get("labelIds", [])
+
+
+def _event_titles(state: dict) -> str:
+    """Live events only (the state also keeps a change log that mentions deleted events)."""
+    return " ".join(e.get("summary", "") for c in state["googlecalendar"]["events"] for e in c["events"]).lower()
 
 
 def _calendar_events(state: dict) -> int:
@@ -149,7 +160,7 @@ SCENARIOS = [
              required=["github_list_notifications", "slack_send_message"], min_calls=3,
              state_check=lambda s: _new_slack_posts(s, "G001") == 1),
     Scenario("s28_cancel_dentist", ["Cancel my dentist appointment."], required=["GOOGLECALENDAR_DELETE_EVENT"], min_calls=2,
-             state_check=lambda s: "dentist" not in _dump(s, "googlecalendar")),
+             state_check=lambda s: "dentist" not in _event_titles(s)),
     # ---- real multi-turn: earlier turns run through /chat, no reset between turns ----
     Scenario("m1_comment_on_first", [], turns=["What Linear issues are assigned to me?", "Add a comment to the first one saying I'm on it."],
              required=["linear_create_comment"], min_calls=1,
@@ -163,6 +174,20 @@ SCENARIOS = [
              required=["GOOGLECALENDAR_CREATE_EVENT"], min_calls=2, state_check=lambda s: _calendar_events(s) > 3),
     Scenario("m5_read_listed_file", [], turns=["What files do I have in Google Drive?", "What does the Launch Brief say?"],
              required=["GOOGLEDRIVE_DOWNLOAD_FILE"], min_calls=1),
+    # ---- destructive actions that MUST still execute (guards against over-blocking) ----
+    Scenario("d1_delete_specific_match", ["Delete the email from the CFO about Q1 revenue."],
+             required_any=["GMAIL_DELETE_MESSAGE", "GMAIL_MOVE_TO_TRASH"], min_calls=2,
+             state_check=lambda s: _gone(s, "msg_002") and not _gone(s, "msg_001")),
+    Scenario("d2_trash_unique", ["Trash the office move checklist email."], required=["GMAIL_MOVE_TO_TRASH"], min_calls=2,
+             state_check=lambda s: _gone(s, "msg_006")),
+    Scenario("d3_cancel_primary_event", ["Cancel the Revenue board prep meeting."], required=["GOOGLECALENDAR_DELETE_EVENT"],
+             min_calls=2, state_check=lambda s: "revenue board prep" not in _event_titles(s)),
+    # ---- router deliberately incomplete: the agent must discover tools with search_tools ----
+    Scenario("t1_discover_send", ["Post 'hello' to #engineering."], force_route=["slack_list_conversations"],
+             required=["slack_send_message"], min_calls=2, state_check=lambda s: _new_slack_posts(s, "C001") == 1),
+    Scenario("t2_discover_cross_service", ["Find the most recent email about the product launch and post a summary to #engineering."],
+             force_route=["GMAIL_FETCH_EMAILS"], required=["GMAIL_FETCH_EMAILS", "slack_send_message"], min_calls=3,
+             state_check=lambda s: _new_slack_posts(s, "C001") == 1),
 ]
 
 
@@ -178,7 +203,14 @@ def run(scenario: Scenario) -> dict[str, Any]:
             earlier_calls += [c["name"] for c in prior["tool_calls"]]
         msgs = [*msgs, {"role": "user", "content": scenario.turns[-1]}]
     t0 = time.perf_counter()
-    resp = client.post("/chat", json={"messages": msgs})
+    if scenario.force_route:
+        from unittest import mock
+
+        from backend.helpers.router import RouteResult
+        with mock.patch("backend.helpers.agent.route", return_value=RouteResult(tools=list(scenario.force_route), source="forced")):
+            resp = client.post("/chat", json={"messages": msgs})
+    else:
+        resp = client.post("/chat", json={"messages": msgs})
     ms = (time.perf_counter() - t0) * 1000
     body = resp.json()
     state = client.get("/state").json()
