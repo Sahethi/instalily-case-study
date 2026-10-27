@@ -72,8 +72,10 @@ class ToolExecutor:
         args = _clean_args(raw_args)
         cache_key = f"{name}:{json.dumps(args, sort_keys=True, default=str)}"
         if is_read_only(name) and cache_key in self._read_cache:
-            # Same read twice in one turn: answer from memory instead of re-calling.
-            return self._read_cache[cache_key]
+            # Same read twice in one turn: answer from memory (not executed, not logged)
+            # and say so, so the model doesn't keep asking for the same data.
+            return ('{"note": "Same result as your earlier identical call - you already have this; '
+                    'use it or try something different.", "result": ' + self._read_cache[cache_key] + "}")
         if cache_key in self._failed:
             # This exact call already failed with an error that can't change on
             # retry (bad arguments, unknown ID). Not executed, so not logged.

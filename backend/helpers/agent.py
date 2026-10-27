@@ -53,14 +53,14 @@ Honesty:
 - If a search finds nothing or a tool errors, say so plainly and suggest a next step. If an error looks fixable (wrong ID format, missing argument), fix it and retry once.
 - When checking whether something exists, don't narrow the lookup with optional filters (types, labels, states, date ranges) - an empty filtered result doesn't prove it's missing.
 - When asked to act on a specific item (file, email, event, issue), first check it exists. If it doesn't, say that clearly - that comes before anything else.
-- Some actions have no tool (e.g. there is no tool to delete a Drive file). Say so instead of pretending.
+- Some actions have no tool (e.g. there is no tool to delete a Drive file). Still look the item up first: if it doesn't exist, say that; if it exists, say the action isn't supported. Never pretend it was done.
 
 Service tips:
 - Gmail: GMAIL_FETCH_EMAILS returns only 1 message unless you set max_results (use ~10 for lists, and at least 5 when finding an email to delete, trash or reply to, so you can see whether several match). The query matches every word as a substring of subject/body/sender, so use 1-2 short keywords (e.g. "timeline" not "timelines"); `from:`, `to:`, `subject:`, `label:`, `in:sent` work. Results are newest first. If nothing matches, retry once with a broader keyword.
 - Drive: always call GOOGLEDRIVE_FIND_FILE with includeItemsFromAllDrives=true and corpora="allDrives" (some files live in shared drives). q looks like "name contains 'budget'"; search by a distinctive part of the name. Mention when a file is in the trash.
 - Slack: call slack_list_conversations without a types filter (what users call a "channel" may be a private channel or group DM). Post only to the conversation the user named - never to a different one. slack_send_message needs a conversation ID from slack_list_conversations (C... channels, D... DMs, G... group DMs), never a user ID or channel name. To DM someone, find the DM conversation that has them as a member.
 - Calendar: the user has several calendars (primary plus secondary ones from GOOGLECALENDAR_LIST_CALENDARS). When looking for a specific event and it isn't on primary, search the other calendars too (in parallel) before saying it doesn't exist. GOOGLECALENDAR_CREATE_EVENT takes start_datetime plus event_duration_hour/event_duration_minutes; attendees are email addresses.
-- Linear: team arguments accept the team key (ENG, GRO) or name directly - no need to look teams up first. linear_list_projects shows each project's members.
+- Linear: team arguments accept the team key (ENG, GRO) or name directly - no need to look teams up first. Projects have no member list: "everyone on a project" means the members of the project's team (team memberIds from linear_list_teams / linear_get_team; emails from linear_list_users).
 
 Answer style: concise and specific. Summaries should use the real content from tool results. When you found or changed specific items, name them with their IDs (e.g. thread thr_001, issue ENG-1, channel C001) so a follow-up message can refer to them without another lookup."""
 
@@ -161,6 +161,7 @@ def _loop(messages: list[Any], executor: ToolExecutor) -> str:
     client = get_client()
     items: list[Any] = list(history)
 
+    idle_steps = 0
     for step in range(MAX_STEPS):
         response = client.responses.create(
             model=AGENT_MODEL,
@@ -179,6 +180,7 @@ def _loop(messages: list[Any], executor: ToolExecutor) -> str:
             log.info("done in %d steps, %.0fms", step + 1, (time.perf_counter() - started) * 1000)
             return response.output_text.strip() or "Done."
 
+        executed_before = len(executor.log)
         for call in calls:
             try:
                 args = json.loads(call.arguments or "{}")
@@ -191,12 +193,20 @@ def _loop(messages: list[Any], executor: ToolExecutor) -> str:
                     output = executor.run(call.name, args)
             items.append({"type": "function_call_output", "call_id": call.call_id, "output": output})
 
-    # Step budget spent: ask for a final answer with tools switched off.
-    log.warning("hit MAX_STEPS=%d, forcing a final answer", MAX_STEPS)
+        # Loop guard: steps that only re-request results we already have (cache
+        # hits / known failures) make no progress. Two in a row -> stop and answer.
+        searched = any(c.name == "search_tools" for c in calls)
+        idle_steps = 0 if (len(executor.log) > executed_before or searched) else idle_steps + 1
+        if idle_steps >= 2:
+            log.warning("no progress for %d steps, forcing a final answer", idle_steps)
+            break
+
+    # Step budget spent (or no progress): final answer with tools switched off.
+    log.warning("stopping tool loop after %d steps, forcing a final answer", stats.current().steps)
     response = client.responses.create(
         model=AGENT_MODEL,
         instructions=SYSTEM_PROMPT
-        + "\n\nYou have run out of tool steps. Answer now with what you have, and be clear about anything left undone.",
+        + "\n\nStop calling tools now. Answer with what you have, and be clear about anything left undone.",
         input=items,
         tools=[*_function_tools(active), SEARCH_TOOLS],
         tool_choice="none",
