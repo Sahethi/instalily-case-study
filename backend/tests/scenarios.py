@@ -13,6 +13,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+import os
+
+os.environ.setdefault("OPENAI_MAX_RETRIES", "8")  # personal keys can be limited to 10 RPM
+
 from fastapi.testclient import TestClient
 
 from backend.main import app
@@ -29,17 +33,26 @@ class Scenario:
     state_check: Callable[[dict[str, Any]], bool] | None = None
 
 
+def _seed_ts() -> set[str]:
+    client = TestClient(app)
+    client.post("/reset")
+    return {m["ts"] for log in client.get("/state").json()["slack"]["channel_messages"] for m in log["messages"]}
+
+
+_SEED_TS = _seed_ts()
+
+
 def _slack_posted(channel: str, needle: str = "") -> Callable[[dict], bool]:
     def check(state: dict) -> bool:
         for log in state["slack"]["channel_messages"]:
             if log["channel"] == channel:
-                return any(m["user"] == "U001" and needle.lower() in m["text"].lower() and float(m["ts"]) > 1775700000 for m in log["messages"])
+                return any(m["user"] == "U001" and needle.lower() in m["text"].lower() and m["ts"] not in _SEED_TS for m in log["messages"])
         return False
     return check
 
 
 def _no_slack_post(state: dict) -> bool:
-    return not any(float(m["ts"]) > 1775700000 for log in state["slack"]["channel_messages"] for m in log["messages"])
+    return not any(m["ts"] not in _SEED_TS for log in state["slack"]["channel_messages"] for m in log["messages"])
 
 
 def _linear_issue(title_part: str, team: str | None = None) -> Callable[[dict], bool]:
@@ -117,7 +130,7 @@ def run(scenario: Scenario) -> dict[str, Any]:
             problems.append(f"reply lacks {group!r}")
     if scenario.state_check and not scenario.state_check(state):
         problems.append("state check failed")
-    errors = [c["name"] for c in body.get("tool_calls", []) if c.get("error")]
+    errors = [f'{c["name"]}({json.dumps(c["arguments"])[:200]}) -> {c["error"]}' for c in body.get("tool_calls", []) if c.get("error")]
     return {"id": scenario.id, "ok": not problems, "ms": ms, "calls": calls, "min": scenario.min_calls,
             "problems": problems, "reply": reply, "errors": errors}
 

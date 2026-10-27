@@ -37,5 +37,5 @@ MAX_ACTIVE_TOOLS = 24
 
 @lru_cache(maxsize=1)
 def get_client() -> OpenAI:
-    # One retry: a quota/auth error won't fix itself, so don't burn 30s+ backing off.
-    return OpenAI(timeout=45, max_retries=1)
+    # Retries cover transient 429/5xx; the SDK honours Retry-After.
+    return OpenAI(timeout=45, max_retries=int(os.environ.get("OPENAI_MAX_RETRIES", "2")))
