@@ -1,4 +1,4 @@
-### 1. Loom Link -
+### 1. Loom Link - https://www.loom.com/share/e18d2e2e48af4c18b9a731a28d458dca
 
 I have been using agentic tools like Muse in my daily life and also when I read more about InstaLily's Lily, I felt like this case study was trying make me achieve the goal of actually accomplishing the work rather than just answering questions like most agents do these days.
 
