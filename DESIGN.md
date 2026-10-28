@@ -1,4 +1,4 @@
-## 1. Loom Link -
+### 1. Loom Link -
 
 I have been using agentic tools like Muse in my daily life and also when I read more about InstaLily's Lily, I felt like this case study was trying make me achieve the goal of actually accomplishing the work rather than just answering questions like most agents do these days.
 
@@ -8,7 +8,7 @@ We are given 191 tools and 7 services and my initial thought was that an agent s
 
 ---
 
-## 2. Tool-Routing Strategy
+### 2. Tool-Routing Strategy
 
 So in the tool-routing part I implemented a 2 stage architecture which is basically using GPT 4.1 mini.
 
@@ -24,21 +24,21 @@ I think this has a limitation for routing recall, in case the router misses a ne
 
 ---
 
-## 3. Orchestration Loop
+### 3. Orchestration Loop
 
 So once the tools are selected, the agent must decide how to set them up in the pipeline and how to use them. For example, I want to summarize an email in Slack. That would require me to 1. Find the email. 2. Understand the contents of the email. 3. Find which Slack channel I want to post this email summary to. 4. Post the message.
 
 And in this case, I made sure that my agent has an iterative loop and I have an executor which is basically handling the invocation calls for the tools. I'm checking if the arguments that I'm passing are valid and also making sure that there is some sort of a cache or a log maintained.
 
-### When does it stop
+#### When does it stop
 
 Usually, the agent stops after it gets a final response, or it reaches 10 steps, or there is no significant progress after 2 steps. But when it reaches the limit, it is able to produce the final response without having help from additional tools.
 
-### How errors propagate
+#### How errors propagate
 
 Whenever the tool fails, the error is sent back to the model as the result, and the agent is looking into how it can correct the arguments, or maybe try to explain the error or retry. And actual tool executions, including failures, are all logged. And if there are identical calls which have previously failed, they are not re-executed.
 
-### parallel vs. sequential
+#### parallel vs. sequential
 
 Even if multiple tools are requested together, they are still always run sequentially by the executor because that's the pattern. Each tool takes around 0.07 ms to process, so even if you're making it parallel and concurrent, it wouldn't really provide a very good benefit.
 
@@ -48,7 +48,7 @@ This also helped me relate to how InstaControl addresses such issues. I feel lik
 
 ---
 
-## 4. What I'd do with another 8 hours
+### 4. What I'd do with another 8 hours
 
 In my final implementation, 34/38 local scenarios have passed, and I have 75 passing unit tests. And my response latency is around 4 seconds.
 
