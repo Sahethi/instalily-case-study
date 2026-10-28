@@ -51,6 +51,18 @@ def _is_deterministic(exc: Exception) -> bool:
     return isinstance(exc, (ValidationError, ValueError, LookupError))
 
 
+def _recovery_hint(name: str) -> dict[str, str]:
+    """On failure, point the model at the lookup tool that resolves names to IDs
+    (from the companion map), so it fixes the call instead of asking the user."""
+    from backend.helpers.catalog import COMPANIONS
+
+    lookups = [t for t in COMPANIONS.get(name, []) if t != name]
+    if not lookups:
+        return {}
+    return {"hint": f"If an ID or name was wrong, look it up with {' / '.join(lookups)} and retry. "
+                    "Don't ask the user for IDs you can look up."}
+
+
 def _short_error(exc: Exception) -> str:
     if isinstance(exc, ValidationError):
         parts = [f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()[:5]]
@@ -149,7 +161,7 @@ class ToolExecutor:
             if _is_deterministic(exc):
                 self._failed[cache_key] = error
             log.info("tool %s failed in %.0fms: %s", name, (time.perf_counter() - started) * 1000, error)
-            return json.dumps({"error": error})
+            return json.dumps({"error": error, **_recovery_hint(name)})
 
         self.log.append(ToolCallLog(name=name, arguments=args, result=result, error=None))
         log.info("tool %s ok in %.0fms", name, (time.perf_counter() - started) * 1000)
